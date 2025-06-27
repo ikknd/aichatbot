@@ -1,8 +1,8 @@
 import 'dotenv/config';
 import * as cheerio from 'cheerio';
 import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
-import { pipeline } from '@xenova/transformers';
 import { createClient } from '@supabase/supabase-js';
+import OpenAI from 'openai';
 
 const BASE_URL = process.env.DOCS_URL;
 // const LANGUAGES = ['en', 'es', 'nl', 'fr', 'it', 'de'];
@@ -13,21 +13,25 @@ const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-// Initialize the embedding pipeline
-let embedder = null;
-async function getEmbedder() {
-    if (!embedder) {
-        console.log('Initializing embedding model...');
-        embedder = await pipeline('feature-extraction', 'Xenova/bge-small-en');
-        console.log('Embedding model initialized');
-    }
-    return embedder;
-}
-
+// Embedding model
 async function getEmbedding(text) {
-    const extractor = await getEmbedder();
-    const output = await extractor(text, { pooling: 'mean', normalize: true });
-    return Array.from(output.data);
+    try {
+        const openai = new OpenAI({
+            baseURL: process.env.LLM_EMBEDDING_URL,
+            apiKey: process.env.LLM_KEY,
+        });
+
+      const response = await openai.embeddings.create({
+        model: process.env.LLM_EMBEDDING_MODEL,
+        input: text,
+        dimensions: 768,
+      });
+      
+      return response.data[0].embedding;
+    } catch (error) {
+      console.error("Error getting embedding:", error.response ? error.response.data : error.message);
+      throw error;
+    }
 }
 
 async function storeChunkInSupabase(chunk) {
@@ -115,9 +119,11 @@ async function getArticleContent(articleUrl) {
 
     // Get article title
     const title = $('h1 span').text().trim();
+    articleDiv.find('h1').remove();
 
-    // Remove all images
+    // Remove all images and videos
     articleDiv.find('img').remove();
+    articleDiv.find('video').remove();
     
     // Get text content and clean it
     let content = articleDiv.text()
@@ -153,7 +159,7 @@ async function processArticle(articleUrl, articleIndex, totalArticles) {
     
     let storedCount = 0;
     for (let i = 0; i < chunks.length; i++) {
-        const chunk = chunks[i];
+        const chunk = title + " " + chunks[i];
         console.log(`Processing chunk ${i + 1}/${chunks.length}`);
         
         // Get embedding for the chunk
@@ -180,7 +186,7 @@ async function processArticle(articleUrl, articleIndex, totalArticles) {
 }
 
 async function main() {
-    console.log('Starting to scrape CMS-DS help site...');
+    console.log('Starting to scrape Documentation site...');
     
     for (const language of LANGUAGES) {
         console.log(`\n=== Processing language: ${language} ===`);

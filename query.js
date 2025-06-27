@@ -1,5 +1,4 @@
 import 'dotenv/config';
-import { pipeline } from '@xenova/transformers';
 import { createClient } from '@supabase/supabase-js';
 import OpenAI from 'openai';
 
@@ -9,23 +8,27 @@ const supabaseKey = process.env.SUPABASE_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 // Embedding model
-let embedder = null;
-async function getEmbedder() {
-    if (!embedder) {
-        console.log('Initializing embedding model...');
-        embedder = await pipeline('feature-extraction', 'Xenova/bge-small-en');
-        console.log('Embedding model initialized');
-    }
-    return embedder;
-}
-
 async function getEmbedding(text) {
-    const extractor = await getEmbedder();
-    const output = await extractor(text, { pooling: 'mean', normalize: true });
-    return Array.from(output.data);
+    try {
+        const openai = new OpenAI({
+            baseURL: process.env.LLM_EMBEDDING_URL,
+            apiKey: process.env.LLM_KEY,
+        });
+
+      const response = await openai.embeddings.create({
+        model: process.env.LLM_EMBEDDING_MODEL,
+        input: text,
+        dimensions: 768,
+      });
+      
+      return response.data[0].embedding;
+    } catch (error) {
+      console.error("Error getting embedding:", error.response ? error.response.data : error.message);
+      throw error;
+    }
 }
 
-async function querySupabase(queryEmbedding, topK = 5) {
+async function querySupabase(queryEmbedding, topK = 10) {
     const { data, error } = await supabase.rpc('match_article_chunks', {
         query_embedding: queryEmbedding,
         match_count: topK
@@ -53,6 +56,8 @@ async function main() {
     const results = await querySupabase(queryEmbedding, topK);
     console.log('Results: ', results.length);
     
+    results.map((row, i) => console.log(row.title, row.chunk_index));
+
     // 3. Prepare context string from top chunks
     const context = results.map((row, i) => `Context ${i + 1} (from: ${row.title}):\n${row.content}`).join('\n\n');
 
@@ -74,12 +79,12 @@ User question: ${userQuery}` }
 
     // 5. Call local LLM using OpenAI SDK
     const openai = new OpenAI({
-        baseURL: process.env.LLM_URL,
+        baseURL: process.env.LLM_CHAT_URL,
         apiKey: process.env.LLM_KEY,
     });
 
     const response = await openai.chat.completions.create({
-        model: process.env.LLM_MODEL,
+        model: process.env.LLM_CHAT_MODEL,
         messages,
         max_tokens: 512,
         temperature: 0.2
